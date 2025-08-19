@@ -1,0 +1,79 @@
+from flask import Flask, request, jsonify, redirect
+import sqlite3
+import uuid
+
+app = Flask(__name__)
+
+# Veritabanı başlat
+def init_db():
+    conn = sqlite3.connect("pixels.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pixels (
+            id INTEGER PRIMARY KEY,
+            sold INTEGER DEFAULT 0,
+            owner_name TEXT,
+            image_url TEXT,
+            target_url TEXT,
+            order_id TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+@app.route("/create_order", methods=["POST"])
+def create_order():
+    """Sipariş oluştur (piksel seçme + reklam bilgisi)"""
+    data = request.json
+    pixel_ids = data.get("pixel_ids")      # [1,2,3]
+    owner_name = data.get("owner_name")    # "Firma Adı"
+    image_url = data.get("image_url")      # logo URL
+    target_url = data.get("target_url")    # tıklanınca gidecek link
+
+    order_id = str(uuid.uuid4())[:8]  # sipariş için kısa ID
+
+    conn = sqlite3.connect("pixels.db")
+    cursor = conn.cursor()
+    for pid in pixel_ids:
+        cursor.execute("""
+            UPDATE pixels 
+            SET order_id=?, owner_name=?, image_url=?, target_url=? 
+            WHERE id=? AND sold=0
+        """, (order_id, owner_name, image_url, target_url, pid))
+    conn.commit()
+    conn.close()
+
+    # Shopier ödeme linkine yönlendir
+    shopier_link = f"https://www.shopier.com/ShowProduct.aspx?uid=ORNEK&order_id={order_id}"
+    return jsonify({"redirect_url": shopier_link})
+
+@app.route("/shopier_callback", methods=["POST"])
+def shopier_callback():
+    """Shopier ödeme dönüşü"""
+    data = request.form.to_dict()
+    order_id = data.get("platform_order_id")
+    payment_status = data.get("status")
+
+    if payment_status == "success":
+        conn = sqlite3.connect("pixels.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE pixels SET sold=1 WHERE order_id=?", (order_id,))
+        conn.commit()
+        conn.close()
+        return "OK", 200
+    return "FAILED", 400
+
+@app.route("/get_pixels")
+def get_pixels():
+    """Pikselleri getir (Frontend için)"""
+    conn = sqlite3.connect("pixels.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, sold, image_url, target_url FROM pixels")
+    pixels = cursor.fetchall()
+    conn.close()
+    return jsonify(pixels)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
